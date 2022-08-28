@@ -20,6 +20,7 @@ import (
 	"github.com/grafana/loki/pkg/storage/chunk/client/gcp"
 	"github.com/grafana/loki/pkg/storage/chunk/client/grpc"
 	"github.com/grafana/loki/pkg/storage/chunk/client/hedging"
+	"github.com/grafana/loki/pkg/storage/chunk/client/iharbor"
 	"github.com/grafana/loki/pkg/storage/chunk/client/local"
 	"github.com/grafana/loki/pkg/storage/chunk/client/openstack"
 	"github.com/grafana/loki/pkg/storage/chunk/client/testutils"
@@ -58,6 +59,7 @@ type Config struct {
 	Swift                  openstack.SwiftConfig     `yaml:"swift"`
 	GrpcConfig             grpc.Config               `yaml:"grpc_store"`
 	Hedging                hedging.Config            `yaml:"hedging"`
+	IHarborConfig          iharbor.IHarborConfig     `yaml:"iharbor"`
 
 	IndexCacheValidity time.Duration `yaml:"index_cache_validity"`
 
@@ -88,6 +90,7 @@ func (cfg *Config) RegisterFlags(f *flag.FlagSet) {
 	cfg.Swift.RegisterFlags(f)
 	cfg.GrpcConfig.RegisterFlags(f)
 	cfg.Hedging.RegisterFlagsWithPrefix("store.", f)
+	cfg.IHarborConfig.RegisterFlags(f)
 
 	cfg.IndexQueriesCacheConfig.RegisterFlagsWithPrefix("store.index-cache-read.", "Cache config for index entry reading.", f)
 	f.DurationVar(&cfg.IndexCacheValidity, "store.index-cache-validity", 5*time.Minute, "Cache validity for active index entries. Should be no higher than -ingester.max-chunk-idle.")
@@ -124,6 +127,9 @@ func (cfg *Config) Validate() error {
 	if err := cfg.TSDBShipperConfig.Validate(); err != nil {
 		return errors.Wrap(err, "invalid tsdb config")
 	}
+	if err := cfg.IHarborConfig.Validate(); err != nil {
+		return errors.Wrap(err, "invalid iharbor config")
+	}
 	return nil
 }
 
@@ -135,7 +141,7 @@ func NewIndexClient(name string, cfg Config, schemaCfg config.SchemaConfig, limi
 		return store, nil
 	case config.StorageTypeAWS, config.StorageTypeAWSDynamo:
 		if cfg.AWSStorageConfig.DynamoDB.URL == nil {
-			return nil, fmt.Errorf("Must set -dynamodb.url in aws mode")
+			return nil, fmt.Errorf("must set -dynamodb.url in aws mode")
 		}
 		path := strings.TrimPrefix(cfg.AWSStorageConfig.DynamoDB.URL.Path, "/")
 		if len(path) > 0 {
@@ -182,7 +188,7 @@ func NewIndexClient(name string, cfg Config, schemaCfg config.SchemaConfig, limi
 
 		return boltDBIndexClientWithShipper, err
 	default:
-		return nil, fmt.Errorf("Unrecognized storage client %v, choose one of: %v, %v, %v, %v, %v, %v", name, config.StorageTypeAWS, config.StorageTypeCassandra, config.StorageTypeInMemory, config.StorageTypeGCP, config.StorageTypeBigTable, config.StorageTypeBigTableHashed)
+		return nil, fmt.Errorf("unrecognized storage client %v, choose one of: %v, %v, %v, %v, %v, %v", name, config.StorageTypeAWS, config.StorageTypeCassandra, config.StorageTypeInMemory, config.StorageTypeGCP, config.StorageTypeBigTable, config.StorageTypeBigTableHashed)
 	}
 }
 
@@ -199,7 +205,7 @@ func NewChunkClient(name string, cfg Config, schemaCfg config.SchemaConfig, clie
 		return client.NewClientWithMaxParallel(c, nil, cfg.MaxParallelGetChunk, schemaCfg), nil
 	case config.StorageTypeAWSDynamo:
 		if cfg.AWSStorageConfig.DynamoDB.URL == nil {
-			return nil, fmt.Errorf("Must set -dynamodb.url in aws mode")
+			return nil, fmt.Errorf("must set -dynamodb.url in aws mode")
 		}
 		path := strings.TrimPrefix(cfg.AWSStorageConfig.DynamoDB.URL.Path, "/")
 		if len(path) > 0 {
@@ -244,8 +250,14 @@ func NewChunkClient(name string, cfg Config, schemaCfg config.SchemaConfig, clie
 		return client.NewClientWithMaxParallel(store, client.FSEncoder, cfg.MaxParallelGetChunk, schemaCfg), nil
 	case config.StorageTypeGrpc:
 		return grpc.NewStorageClient(cfg.GrpcConfig, schemaCfg)
+	case config.StorageTypeIHarbor:
+		c, err := iharbor.NewObjectStorage(context.Background(), cfg.IHarborConfig)
+		if err != nil {
+			return nil, err
+		}
+		return client.NewClientWithMaxParallel(c, nil, cfg.MaxChunkBatchSize, schemaCfg), nil
 	default:
-		return nil, fmt.Errorf("Unrecognized storage client %v, choose one of: %v, %v, %v, %v, %v, %v, %v, %v", name, config.StorageTypeAWS, config.StorageTypeAzure, config.StorageTypeCassandra, config.StorageTypeInMemory, config.StorageTypeGCP, config.StorageTypeBigTable, config.StorageTypeBigTableHashed, config.StorageTypeGrpc)
+		return nil, fmt.Errorf("unrecognized storage client %v, choose one of: %v, %v, %v, %v, %v, %v, %v, %v, %v", name, config.StorageTypeAWS, config.StorageTypeAzure, config.StorageTypeCassandra, config.StorageTypeInMemory, config.StorageTypeGCP, config.StorageTypeBigTable, config.StorageTypeIHarbor, config.StorageTypeBigTableHashed, config.StorageTypeGrpc)
 	}
 }
 
@@ -256,7 +268,7 @@ func NewTableClient(name string, cfg Config, cm ClientMetrics, registerer promet
 		return testutils.NewMockStorage(), nil
 	case config.StorageTypeAWS, config.StorageTypeAWSDynamo:
 		if cfg.AWSStorageConfig.DynamoDB.URL == nil {
-			return nil, fmt.Errorf("Must set -dynamodb.url in aws mode")
+			return nil, fmt.Errorf("must set -dynamodb.url in aws mode")
 		}
 		path := strings.TrimPrefix(cfg.AWSStorageConfig.DynamoDB.URL.Path, "/")
 		if len(path) > 0 {
@@ -278,7 +290,7 @@ func NewTableClient(name string, cfg Config, cm ClientMetrics, registerer promet
 		}
 		return shipper.NewBoltDBShipperTableClient(objectClient, cfg.BoltDBShipperConfig.SharedStoreKeyPrefix), nil
 	default:
-		return nil, fmt.Errorf("Unrecognized storage client %v, choose one of: %v, %v, %v, %v, %v, %v, %v", name, config.StorageTypeAWS, config.StorageTypeCassandra, config.StorageTypeInMemory, config.StorageTypeGCP, config.StorageTypeBigTable, config.StorageTypeBigTableHashed, config.StorageTypeGrpc)
+		return nil, fmt.Errorf("unrecognized storage client %v, choose one of: %v, %v, %v, %v, %v, %v, %v", name, config.StorageTypeAWS, config.StorageTypeCassandra, config.StorageTypeInMemory, config.StorageTypeGCP, config.StorageTypeBigTable, config.StorageTypeBigTableHashed, config.StorageTypeGrpc)
 	}
 }
 
@@ -332,7 +344,9 @@ func NewObjectClient(name string, cfg Config, clientMetrics ClientMetrics) (clie
 		return local.NewFSObjectClient(cfg.FSConfig)
 	case config.StorageTypeBOS:
 		return baidubce.NewBOSObjectStorage(&cfg.BOSStorageConfig)
+	case config.StorageTypeIHarbor:
+		return iharbor.NewObjectStorage(context.Background(), cfg.IHarborConfig)
 	default:
-		return nil, fmt.Errorf("Unrecognized storage client %v, choose one of: %v, %v, %v, %v, %v", name, config.StorageTypeAWS, config.StorageTypeS3, config.StorageTypeGCS, config.StorageTypeAzure, config.StorageTypeFileSystem)
+		return nil, fmt.Errorf("unrecognized storage client %v, choose one of: %v, %v, %v, %v, %v, %v", name, config.StorageTypeAWS, config.StorageTypeS3, config.StorageTypeGCS, config.StorageTypeAzure, config.StorageTypeIHarbor, config.StorageTypeFileSystem)
 	}
 }

@@ -39,6 +39,7 @@ const (
 	StorageTypeLocal          = "local"
 	StorageTypeS3             = "s3"
 	StorageTypeSwift          = "swift"
+	StorageTypeIHarbor        = "iharbor"
 	// BoltDBShipperType holds the index type for using boltdb with shipper which keeps flushing them to a shared storage
 	BoltDBShipperType = "boltdb-shipper"
 	TSDBType          = "tsdb"
